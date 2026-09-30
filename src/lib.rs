@@ -1,8 +1,9 @@
-use std::{borrow::Cow, collections::HashMap, ops::Index, panic::Location, sync::Arc};
+use std::{collections::HashMap, ops::Index, panic::Location, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy)]
 pub struct BuildInfo {
     pub git_sha: &'static str,
     pub dirty: bool,
@@ -41,6 +42,7 @@ pub enum Source {
 }
 
 pub struct SourceTracker<T: Clone> {
+    build: BuildInfo,
     trail: Trail,
     data: Option<T>,
 }
@@ -49,6 +51,7 @@ impl<T: Clone> Default for SourceTracker<T> {
     #[track_caller]
     fn default() -> Self {
         Self {
+            build: BUILD,
             trail: Default::default(),
             data: Default::default(),
         }
