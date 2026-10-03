@@ -1,9 +1,29 @@
-use std::{collections::HashMap, ops::Index, panic::Location, sync::Arc};
+#![deny(
+    bad_style,
+    missing_debug_implementations,
+    overflowing_literals,
+    patterns_in_fns_without_body,
+    trivial_casts,
+    trivial_numeric_casts,
+    unsafe_code,
+    unused,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    unused_results
+)]
 
-use chrono::{DateTime, Utc};
-use serde_json::Value;
+pub mod source_tracker;
+pub mod steps;
+mod tracked_owned;
+mod tracked_ref;
+pub mod trail;
+pub use tracked_owned::*;
+pub use tracked_ref::*;
 
-#[derive(Debug, Clone, Copy)]
+use serde_derive::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BuildInfo {
     pub git_sha: &'static str,
     pub dirty: bool,
@@ -18,116 +38,17 @@ pub const BUILD: BuildInfo = BuildInfo {
     crate_version: env!("CARGO_PKG_VERSION"),
 };
 
-#[derive(Debug, Clone, Copy)]
-pub enum HttpMethod {
-    Get,
-    Post,
-}
-
-#[derive(Debug, Clone)]
-pub struct HttpSource {
-    url: String,
-    method: HttpMethod,
-    body: Option<Value>,
-    headers: HashMap<String, String>,
-    fetched_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum Source {
-    Http(HttpSource),
-    Slice(String),
-    #[default]
-    Root,
-}
-
-pub struct SourceTracker<T: Clone> {
-    build: BuildInfo,
-    trail: Trail,
-    data: Option<T>,
-}
-
-impl<T: Clone> Default for SourceTracker<T> {
-    #[track_caller]
-    fn default() -> Self {
-        Self {
-            build: BUILD,
-            trail: Default::default(),
-            data: Default::default(),
-        }
-    }
-}
-
-impl<T: Clone> SourceTracker<T> {
-    #[track_caller]
-    fn add_source(&mut self, step: Source) {
-        self.trail = Trail {
-            parent: Some(Arc::new(self.trail.clone())),
-            step,
-            at: Location::caller(),
-        }
-    }
-
-    #[track_caller]
-    fn var<'d>(&'d mut self, data: T) -> TrackedData<'d, T> {
-        self.data = Some(data);
-        TrackedData {
-            trail: self.trail.clone(),
-            data: &self.data.as_ref().unwrap(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Trail {
-    parent: Option<Arc<Trail>>,
-    step: Source,
-    at: &'static Location<'static>,
-}
-
-impl Default for Trail {
-    #[track_caller]
-    fn default() -> Self {
-        Self {
-            parent: Default::default(),
-            step: Default::default(),
-            at: Location::caller(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TrackedData<'d, T: Clone> {
-    trail: Trail,
-    data: &'d T,
-}
-
-impl<'d, T: Clone> TrackedData<'d, T> {
-    #[track_caller]
-    pub fn get(&self, idx: &str) -> TrackedData<'d, T>
-    where
-        for<'a> T: Index<&'a str, Output = T>,
-    {
-        let trail = Trail {
-            parent: Some(Arc::new(self.trail.clone())),
-            step: Source::Slice(idx.to_string()),
-            at: Location::caller(),
-        };
-
-        TrackedData {
-            trail,
-            data: &self.data[idx],
-        }
-    }
-}
-
-// First source -> Meta -> second source
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
     use serde_json::json;
 
-    use super::*;
+    use crate::{
+        source_tracker::SourceTracker,
+        steps::{HttpMethod, HttpSource, Step},
+    };
 
     #[test]
     fn test_track_source() {
@@ -149,7 +70,7 @@ mod tests {
           ]
         }};
 
-        source_tracker.add_source(Source::Http(HttpSource {
+        source_tracker.add_source(Step::Http(HttpSource {
             url: "".to_string(),
             method: HttpMethod::Post,
             body: Some(body),
@@ -163,15 +84,119 @@ mod tests {
             }
         }});
         let hi = var.get("hi").get("idx");
-        dbg!(&hi);
-        // let res = hi.get("hi");
+        let str = hi.into_string().transpose().unwrap();
+        assert_eq!(&str.data, "data");
+        assert_eq!(str.trail().step(), &Step::Str);
 
-        source_tracker.add_source(Source::Http(HttpSource {
+        source_tracker.add_source(Step::Http(HttpSource {
             url: "".to_string(),
             method: HttpMethod::Get,
             body: None,
             headers: HashMap::default(),
             fetched_at: Utc::now(),
         }));
+    }
+
+    #[test]
+    fn track_array_and_str() {
+        let mut tracker = SourceTracker::default();
+        tracker.add_source(Step::Http(HttpSource {
+            url: "https://api.example/legislation".to_string(),
+            method: HttpMethod::Get,
+            body: None,
+            headers: HashMap::default(),
+            fetched_at: Utc::now(),
+        }));
+
+        let content = tracker.var(json! {{
+            "reference": [{ "url": "https://init.example/1" }],
+            "title": "Some Law"
+        }});
+
+        let legis_init_path = content
+            .get("reference")
+            .get_index(0)
+            .get("url")
+            .as_str()
+            .data
+            .unwrap();
+        assert_eq!(legis_init_path, "https://init.example/1");
+
+        let trail = content
+            .get("reference")
+            .get_index(0)
+            .get("url")
+            .trail()
+            .to_string();
+        assert!(trail.contains("http GET https://api.example/legislation"));
+        assert!(trail.contains(r#"key "reference""#));
+        assert!(trail.contains("index 0"));
+        assert!(trail.contains(r#"key "url""#));
+
+        let items = content.get("reference").items().unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].trail().to_string().contains("index 0"));
+        assert_eq!(content.get("reference").as_array().unwrap().len(), 1);
+
+        let values = content.object_values().unwrap();
+        assert_eq!(values.len(), 2);
+        // assert!(
+        //     values.iter().any(|v| v.as_str() == Some("Some Law")
+        //         && v.trail().to_string().contains(r#"key "title""#))
+        // );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected array, found 3")]
+    fn expect_array_reports_the_trail() {
+        // let mut tracker = SourceTracker::default();
+        // let content = tracker.var(json! {{ "reference": 3 }});
+        // let items = content.get("reference").expect_array();
+        // println!("{:?}", items);
+    }
+
+    #[test]
+    fn track_custom_transform() {
+        let mut tracker = SourceTracker::default();
+        let content = tracker.var(json! {{ "slug": "  MiNiStRy  " }});
+
+        let slug = content.get("slug").transform("trim_lowercase_ascii", |v| {
+            v.as_str().unwrap_or_default().trim().to_ascii_lowercase()
+        });
+
+        assert_eq!(slug.as_tracked().inner(), "ministry");
+        let trail = slug.trail().to_string();
+        assert!(trail.contains(r#"key "slug""#));
+        assert!(trail.contains(r#"transform "trim_lowercase_ascii""#));
+
+        let tagged = content.get("slug").labeled("held_for_review");
+        assert_eq!(tagged.inner().as_str().unwrap(), "  MiNiStRy  ");
+        assert!(
+            tagged
+                .trail()
+                .to_string()
+                .contains(r#"transform "held_for_review""#)
+        );
+
+        let failed = content
+            .get("slug")
+            .transform_opt("needs_number", |v| v.as_u64());
+        assert!(failed.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "expected string, found 42")]
+    fn expect_str_reports_the_trail() {
+        let mut tracker = SourceTracker::default();
+        tracker.add_source(Step::Http(HttpSource {
+            url: "https://api.example/legislation".to_string(),
+            method: HttpMethod::Get,
+            body: None,
+            headers: HashMap::default(),
+            fetched_at: Utc::now(),
+        }));
+        let content = tracker.var(json! {{ "reference": [{ "url": 42 }] }});
+        let url = content.get("reference").get_index(0).get("url");
+        println!("{url:?}");
     }
 }
