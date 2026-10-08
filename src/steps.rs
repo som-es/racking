@@ -7,6 +7,9 @@ pub use transform::*;
 use core::fmt;
 use serde_derive::{Deserialize, Serialize};
 
+pub type From = String;
+pub type To = String;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Step {
     Http(HttpSource),
@@ -15,6 +18,7 @@ pub enum Step {
     Str,
     Array,
     Transform(Transform),
+    Map((From, To)),
     #[default]
     Root,
 }
@@ -29,6 +33,7 @@ impl fmt::Display for Step {
             Step::Str => f.write_str("as_str"),
             Step::Array => f.write_str("as_array"),
             Step::Transform(t) => write!(f, "transform {:?}", t.name),
+            Step::Map(to) => write!(f, "map to {to:?}"),
         }
     }
 }

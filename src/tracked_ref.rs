@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Index, panic::Location};
+use std::{any::type_name, borrow::Cow, ops::Index, panic::Location};
 
 use serde_json::Value;
 
@@ -47,13 +47,16 @@ impl<'d, T: Clone> TrackedRef<'d, T> {
         self.with_trail(self.trail.pushed(Step::Index(idx)), data)
     }
 
-    #[track_caller]
     #[inline]
-    pub fn labeled(&self, name: impl Into<Cow<'static, str>>) -> TrackedRef<'d, T> {
-        self.with_trail(
-            self.trail.pushed(Step::Transform(Transform::new(name))),
-            self.data,
-        )
+    pub fn map<U>(&self, f: impl Fn(&T) -> U) -> TrackedOwned<U> {
+        let trail = self.trail.pushed(Step::Map((
+            type_name::<T>().to_string(),
+            type_name::<U>().to_string(),
+        )));
+        TrackedOwned {
+            trail,
+            data: f(self.data),
+        }
     }
 
     #[track_caller]
@@ -73,7 +76,7 @@ impl<'d, T: Clone> TrackedRef<'d, T> {
         at: &'static Location<'static>,
         f: impl FnOnce(&T) -> R,
     ) -> TrackedOwned<R> {
-        let step = Step::Transform(Transform { name: name.into() });
+        let step = Step::Transform(Transform::new::<T, R>(name));
         TrackedOwned {
             trail: self.trail.pushed_at(step, at),
             data: f(self.data),
@@ -87,7 +90,7 @@ impl<'d, T: Clone> TrackedRef<'d, T> {
         name: impl Into<Cow<'static, str>>,
         f: impl FnOnce(&T) -> Option<R>,
     ) -> Option<TrackedOwned<R>> {
-        let step = Step::Transform(Transform { name: name.into() });
+        let step = Step::Transform(Transform::new::<T, R>(name));
         let trail = self.trail.pushed_at(step, Location::caller());
         let data = f(self.data)?;
         Some(TrackedOwned { trail, data })
@@ -105,6 +108,8 @@ impl<'d> TrackedRef<'d, Value> {
         }
     }
 
+    // as_u64
+
     #[track_caller]
     pub fn into_string(&self) -> TrackedOwned<Option<String>> {
         let tracked = self.as_str();
@@ -114,20 +119,22 @@ impl<'d> TrackedRef<'d, Value> {
         }
     }
 
-    pub fn as_array(&self) -> Option<&'d [Value]> {
-        self.data.as_array().map(Vec::as_slice)
+    pub fn as_array(&self) -> Option<TrackedOwned<&'d [Value]>> {
+        todo!()
+        // self.data.as_array().map(Vec::as_slice)
     }
 
     #[track_caller]
     pub fn items(&self) -> Option<Vec<TrackedRef<'d, Value>>> {
-        let at = Location::caller();
-        let arr: &'d [Value] = self.as_array()?;
-        Some(
-            arr.iter()
-                .enumerate()
-                .map(|(idx, v)| self.with_trail(self.trail.pushed_at(Step::Index(idx), at), v))
-                .collect(),
-        )
+        todo!()
+        // let at = Location::caller();
+        // let arr: &'d [Value] = self.as_array()?;
+        // Some(
+        //     arr.iter()
+        //         .enumerate()
+        //         .map(|(idx, v)| self.with_trail(self.trail.pushed_at(Step::Index(idx), at), v))
+        //         .collect(),
+        // )
     }
 
     #[track_caller]

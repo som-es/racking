@@ -1,24 +1,22 @@
-use crate::{BUILD, BuildInfo, TrackedRef, steps::Step, trail::Trail};
+use crate::{BUILD, BuildInfo, TrackedOwned, steps::Step, trail::Trail};
 
-#[derive(Debug, Clone)]
-pub struct SourceTracker<T: Clone> {
+#[derive(Debug)]
+pub struct SourceTracker {
     build: BuildInfo,
     trail: Trail,
-    data: Option<T>,
 }
 
-impl<T: Clone> Default for SourceTracker<T> {
+impl Default for SourceTracker {
     #[track_caller]
     fn default() -> Self {
         Self {
             build: BUILD,
             trail: Default::default(),
-            data: Default::default(),
         }
     }
 }
 
-impl<T: Clone> SourceTracker<T> {
+impl SourceTracker {
     pub fn build(&self) -> BuildInfo {
         self.build
     }
@@ -33,11 +31,10 @@ impl<T: Clone> SourceTracker<T> {
     }
 
     #[track_caller]
-    pub fn var<'d>(&'d mut self, data: T) -> TrackedRef<'d, T> {
-        self.data = Some(data);
-        TrackedRef {
+    pub fn var<T>(&mut self, data: T) -> TrackedOwned<T> {
+        TrackedOwned {
             trail: self.trail.clone(),
-            data: self.data.as_ref().unwrap(),
+            data,
         }
     }
 }
